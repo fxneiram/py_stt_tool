@@ -47,6 +47,12 @@ class SpeechRecognizerApp:
         self.model = None
         self.running = False
 
+        # Variable to track selected device
+        self.selected_device_index = self.device_list.current()
+
+        # Initialize the audio stream
+        self.start_audio_stream()
+
     def populate_device_list(self):
         p = pyaudio.PyAudio()
         device_count = p.get_device_count()
@@ -63,41 +69,64 @@ class SpeechRecognizerApp:
         self.device_list['values'] = devices
         self.device_list.current(0)  # Select the first device by default
 
-    def start_recognition(self):
-        selected_device_index = self.device_list.current()
-        self.running = True
-        self.start_button.config(state=tk.DISABLED)
-        self.stop_button.config(state=tk.NORMAL)
-        self.text_output.delete(1.0, tk.END)
+        # Bind the event when a new device is selected
+        self.device_list.bind("<<ComboboxSelected>>", self.on_device_selected)
 
-        self.recognition_thread = threading.Thread(target=self.recognize_speech, args=(selected_device_index,))
-        self.recognition_thread.start()
+    def on_device_selected(self, event):
+        # Update selected device index and restart the stream with the new device
+        self.selected_device_index = self.device_list.current()
+        self.text_output.insert(tk.END, f"Device changed to: {self.device_list.get()}\n")
+        self.text_output.see(tk.END)
+        self.restart_audio_stream()
 
-    def recognize_speech(self, device_index):
-        # Set the model path
-        model_path = "models/vosk-model-en-us-0.42-gigaspeech"
-        self.model = vosk.Model(model_path)
-
-        # Create a recognizer
-        self.recognizer = vosk.KaldiRecognizer(self.model, 16000)
-
-        # Open the microphone stream
+    def start_audio_stream(self):
+        # Initialize PyAudio and open the stream
         self.p = pyaudio.PyAudio()
         self.stream = self.p.open(format=pyaudio.paInt16,
                                   channels=1,
                                   rate=16000,
                                   input=True,
-                                  input_device_index=device_index,
+                                  input_device_index=self.selected_device_index,
                                   frames_per_buffer=1024)
+
+        # Start a thread to monitor the audio intensity
+        self.audio_monitor_thread = threading.Thread(target=self.monitor_audio_intensity)
+        self.audio_monitor_thread.start()
+
+    def restart_audio_stream(self):
+        # Stop the current stream and restart with the new device
+        self.stream.stop_stream()
+        self.stream.close()
+        self.start_audio_stream()
+
+    def monitor_audio_intensity(self):
+        while True:
+            data = self.stream.read(1024, exception_on_overflow=False)
+            volume_level = np.frombuffer(data, dtype=np.int16).astype(np.float32).max()
+            self.progress['value'] = min(volume_level / 32767 * 100, 100)
+
+    def start_recognition(self):
+        self.running = True
+        self.device_list.config(state=tk.DISABLED)  # Disable device list
+        self.start_button.config(state=tk.DISABLED)
+        self.stop_button.config(state=tk.NORMAL)
+        self.text_output.delete(1.0, tk.END)
+
+        self.recognition_thread = threading.Thread(target=self.recognize_speech)
+        self.recognition_thread.start()
+
+    def recognize_speech(self):
+        # Set the model path
+        model_path = "vosk-model-en-us-0.42-gigaspeech"
+        self.model = vosk.Model(model_path)
+
+        # Create a recognizer
+        self.recognizer = vosk.KaldiRecognizer(self.model, 16000)
 
         self.text_output.insert(tk.END, "Listening for speech. Say 'Terminate' to stop.\n")
 
         while self.running:
             data = self.stream.read(1024, exception_on_overflow=False)
-            # Compute the volume level and update the progress bar
-            volume_level = np.frombuffer(data, dtype=np.int16).astype(np.float32).max()
-            self.progress['value'] = min(volume_level / 32767 * 100, 100)
-
             if self.recognizer.AcceptWaveform(data):
                 result = json.loads(self.recognizer.Result())
                 recognized_text = result['text']
@@ -109,16 +138,23 @@ class SpeechRecognizerApp:
                     self.stop_recognition()
                     break
 
-        self.stream.stop_stream()
-        self.stream.close()
-        self.p.terminate()
-
     def stop_recognition(self):
         self.running = False
+        self.device_list.config(state="readonly")  # Enable device list
         self.start_button.config(state=tk.NORMAL)
         self.stop_button.config(state=tk.DISABLED)
+
+    def on_close(self):
+        # Handle application closing to stop the stream and terminate PyAudio
+        if self.stream is not None:
+            self.stream.stop_stream()
+            self.stream.close()
+        if self.p is not None:
+            self.p.terminate()
+        self.root.destroy()
 
 if __name__ == "__main__":
     root = tk.Tk()
     app = SpeechRecognizerApp(root)
+    root.protocol("WM_DELETE_WINDOW", app.on_close)
     root.mainloop()
