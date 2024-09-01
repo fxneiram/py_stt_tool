@@ -60,17 +60,26 @@ class SpeechRecognizerApp:
 
         for i in range(device_count):
             device_info = p.get_device_info_by_index(i)
-            try:
-                device_name = device_info['name'].encode('cp1252').decode('utf-8')
-            except UnicodeEncodeError:
-                device_name = device_info['name']
-            devices.append(device_name)
+            
+            # Check if the device is an output device (has output channels)
+            if device_info['hostApi'] == 0:
+                print(device_info)
+                try:
+                    device_name = device_info['name'].encode('cp1252').decode('utf-8')
+                except UnicodeEncodeError:
+                    device_name = device_info['name']
+                devices.append((i, device_name))  # Store device index with name
 
-        self.device_list['values'] = devices
+        # Update the device list combobox with the filtered devices
+        self.device_list['values'] = [name for idx, name in devices]
         self.device_list.current(0)  # Select the first device by default
 
         # Bind the event when a new device is selected
         self.device_list.bind("<<ComboboxSelected>>", self.on_device_selected)
+        
+        # Store the device indices for later use
+        self.device_indices = [idx for idx, name in devices]
+
 
     def on_device_selected(self, event):
         # Update selected device index and restart the stream with the new device
@@ -80,30 +89,53 @@ class SpeechRecognizerApp:
         self.restart_audio_stream()
 
     def start_audio_stream(self):
-        # Initialize PyAudio and open the stream
-        self.p = pyaudio.PyAudio()
-        self.stream = self.p.open(format=pyaudio.paInt16,
-                                  channels=1,
-                                  rate=16000,
-                                  input=True,
-                                  input_device_index=self.selected_device_index,
-                                  frames_per_buffer=1024)
+        try:
+            # Initialize PyAudio and open the stream
+            self.p = pyaudio.PyAudio()
+            # Obtain the selected device's info
+            device_info = self.p.get_device_info_by_index(self.selected_device_index)
+            
+            # Extract channels and sample rate from the selected device
+            channels = device_info['maxInputChannels']
+            rate = int(device_info['defaultSampleRate'])
 
-        # Start a thread to monitor the audio intensity
-        self.audio_monitor_thread = threading.Thread(target=self.monitor_audio_intensity)
-        self.audio_monitor_thread.start()
+            self.stream = self.p.open(format=pyaudio.paInt16,
+                                      channels=channels,
+                                      rate=rate,
+                                      input=True,
+                                      input_device_index=self.selected_device_index,
+                                      frames_per_buffer=1024,
+                                      )
+
+            # Start a thread to monitor the audio intensity
+            self.audio_monitor_thread = threading.Thread(target=self.monitor_audio_intensity)
+            self.audio_monitor_thread.start()
+
+        except Exception as e:
+            self.text_output.insert(tk.END, f"Error initializing audio stream: {e}\n")
+            self.text_output.see(tk.END)
+            self.stream = None
 
     def restart_audio_stream(self):
-        # Stop the current stream and restart with the new device
-        self.stream.stop_stream()
-        self.stream.close()
-        self.start_audio_stream()
+        try:
+            if self.stream is not None:
+                self.stream.stop_stream()
+                self.stream.close()
+            self.start_audio_stream()
+        except Exception as e:
+            self.text_output.insert(tk.END, f"Error restarting audio stream: {e}\n")
+            self.text_output.see(tk.END)
 
     def monitor_audio_intensity(self):
         while True:
-            data = self.stream.read(1024, exception_on_overflow=False)
-            volume_level = np.frombuffer(data, dtype=np.int16).astype(np.float32).max()
-            self.progress['value'] = min(volume_level / 32767 * 100, 100)
+            if self.stream is not None:
+                try:
+                    data = self.stream.read(1024, exception_on_overflow=False)
+                    volume_level = np.frombuffer(data, dtype=np.int16).astype(np.float32).max()
+                    self.progress['value'] = min(volume_level / 32767 * 100, 100)
+                except Exception as e:
+                    self.text_output.insert(tk.END, f"Error reading audio stream: {e}\n")
+                    self.text_output.see(tk.END)
 
     def start_recognition(self):
         self.running = True
@@ -116,27 +148,32 @@ class SpeechRecognizerApp:
         self.recognition_thread.start()
 
     def recognize_speech(self):
-        # Set the model path
-        model_path = "vosk-model-en-us-0.42-gigaspeech"
-        self.model = vosk.Model(model_path)
+        try:
+            # Set the model path
+            model_path = "vosk-model-en-us-0.42-gigaspeech"
+            self.model = vosk.Model(model_path)
 
-        # Create a recognizer
-        self.recognizer = vosk.KaldiRecognizer(self.model, 16000)
+            # Create a recognizer
+            self.recognizer = vosk.KaldiRecognizer(self.model, 16000)
 
-        self.text_output.insert(tk.END, "Listening for speech. Say 'Terminate' to stop.\n")
+            self.text_output.insert(tk.END, "Listening for speech. Say 'Terminate' to stop.\n")
 
-        while self.running:
-            data = self.stream.read(1024, exception_on_overflow=False)
-            if self.recognizer.AcceptWaveform(data):
-                result = json.loads(self.recognizer.Result())
-                recognized_text = result['text']
-                self.text_output.insert(tk.END, recognized_text + "\n")
-                self.text_output.see(tk.END)  # Scroll to the end of the text box
+            while self.running:
+                data = self.stream.read(1024, exception_on_overflow=False)
+                if self.recognizer.AcceptWaveform(data):
+                    result = json.loads(self.recognizer.Result())
+                    recognized_text = result['text']
+                    self.text_output.insert(tk.END, recognized_text + "\n")
+                    self.text_output.see(tk.END)  # Scroll to the end of the text box
 
-                if "terminate" in recognized_text.lower():
-                    self.text_output.insert(tk.END, "Termination keyword detected. Stopping...\n")
-                    self.stop_recognition()
-                    break
+                    if "terminate" in recognized_text.lower():
+                        self.text_output.insert(tk.END, "Termination keyword detected. Stopping...\n")
+                        self.stop_recognition()
+                        break
+
+        except Exception as e:
+            self.text_output.insert(tk.END, f"Error during recognition: {e}\n")
+            self.text_output.see(tk.END)
 
     def stop_recognition(self):
         self.running = False
