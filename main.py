@@ -4,6 +4,7 @@ import json
 import tkinter as tk
 from tkinter import ttk, scrolledtext
 import threading
+import numpy as np
 
 class SpeechRecognizerApp:
     def __init__(self, root):
@@ -29,6 +30,10 @@ class SpeechRecognizerApp:
         # ScrolledText widget for displaying recognized text
         self.text_output = scrolledtext.ScrolledText(root, wrap=tk.WORD, font=("Helvetica", 10), width=50, height=20)
         self.text_output.grid(row=2, column=0, columnspan=2, padx=10, pady=10, sticky="nsew")
+
+        # Progressbar for audio intensity
+        self.progress = ttk.Progressbar(root, orient=tk.HORIZONTAL, length=200, mode='determinate')
+        self.progress.grid(row=3, column=0, columnspan=2, padx=10, pady=10, sticky="ew")
 
         # Configure row and column weights for resizing
         root.grid_columnconfigure(0, weight=1)
@@ -70,7 +75,7 @@ class SpeechRecognizerApp:
 
     def recognize_speech(self, device_index):
         # Set the model path
-        model_path = "vosk-model-en-us-0.42-gigaspeech"
+        model_path = "models/vosk-model-en-us-0.42-gigaspeech"
         self.model = vosk.Model(model_path)
 
         # Create a recognizer
@@ -89,6 +94,10 @@ class SpeechRecognizerApp:
 
         while self.running:
             data = self.stream.read(1024, exception_on_overflow=False)
+            # Compute the volume level and update the progress bar
+            volume_level = np.frombuffer(data, dtype=np.int16).astype(np.float32).max()
+            self.progress['value'] = min(volume_level / 32767 * 100, 100)
+
             if self.recognizer.AcceptWaveform(data):
                 result = json.loads(self.recognizer.Result())
                 recognized_text = result['text']
