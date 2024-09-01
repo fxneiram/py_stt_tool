@@ -5,6 +5,7 @@ import tkinter as tk
 from tkinter import ttk, scrolledtext
 import threading
 import numpy as np
+import os
 
 class SpeechRecognizerApp:
     def __init__(self, root):
@@ -20,25 +21,34 @@ class SpeechRecognizerApp:
         self.device_list.grid(row=0, column=1, padx=10, pady=10, sticky="ew")
         self.populate_device_list()
 
+        # Label for models
+        self.model_label = ttk.Label(root, text="Select Model:")
+        self.model_label.grid(row=1, column=0, padx=10, pady=10, sticky="w")
+
+        # Dropdown menu for models
+        self.model_list = ttk.Combobox(root, state="readonly")
+        self.model_list.grid(row=1, column=1, padx=10, pady=10, sticky="ew")
+        self.populate_model_list()
+
         # Start and Stop buttons
         self.start_button = ttk.Button(root, text="Start", command=self.start_recognition)
-        self.start_button.grid(row=1, column=0, padx=10, pady=10, sticky="w")
+        self.start_button.grid(row=2, column=0, padx=10, pady=10, sticky="w")
 
         self.stop_button = ttk.Button(root, text="Stop", command=self.stop_recognition, state=tk.DISABLED)
-        self.stop_button.grid(row=1, column=1, padx=10, pady=10, sticky="e")
+        self.stop_button.grid(row=2, column=1, padx=10, pady=10, sticky="e")
 
         # ScrolledText widget for displaying recognized text
         self.text_output = scrolledtext.ScrolledText(root, wrap=tk.WORD, font=("Helvetica", 10), width=50, height=20)
-        self.text_output.grid(row=2, column=0, columnspan=2, padx=10, pady=10, sticky="nsew")
+        self.text_output.grid(row=3, column=0, columnspan=2, padx=10, pady=10, sticky="nsew")
 
         # Progressbar for audio intensity
         self.progress = ttk.Progressbar(root, orient=tk.HORIZONTAL, length=200, mode='determinate')
-        self.progress.grid(row=3, column=0, columnspan=2, padx=10, pady=10, sticky="ew")
+        self.progress.grid(row=4, column=0, columnspan=2, padx=10, pady=10, sticky="ew")
 
         # Configure row and column weights for resizing
         root.grid_columnconfigure(0, weight=1)
         root.grid_columnconfigure(1, weight=2)
-        root.grid_rowconfigure(2, weight=1)
+        root.grid_rowconfigure(3, weight=1)
 
         # Initialize variables
         self.recognizer = None
@@ -47,8 +57,9 @@ class SpeechRecognizerApp:
         self.model = None
         self.running = False
 
-        # Variable to track selected device
+        # Variable to track selected device and model
         self.selected_device_index = self.device_list.current()
+        self.selected_model = self.model_list.get()
 
         # Initialize the audio stream
         self.start_audio_stream()
@@ -61,32 +72,34 @@ class SpeechRecognizerApp:
         for i in range(device_count):
             device_info = p.get_device_info_by_index(i)
             
-            # Check if the device is an output device (has output channels)
             if device_info['hostApi'] == 0:
-                print(device_info)
                 try:
                     device_name = device_info['name'].encode('cp1252').decode('utf-8')
                 except UnicodeEncodeError:
                     device_name = device_info['name']
-                devices.append((i, device_name))  # Store device index with name
+                devices.append((i, device_name))
 
-        # Update the device list combobox with the filtered devices
         self.device_list['values'] = [name for idx, name in devices]
-        self.device_list.current(0)  # Select the first device by default
-
-        # Bind the event when a new device is selected
+        self.device_list.current(0)
         self.device_list.bind("<<ComboboxSelected>>", self.on_device_selected)
-        
-        # Store the device indices for later use
         self.device_indices = [idx for idx, name in devices]
 
+    def populate_model_list(self):
+        models = [folder for folder in os.listdir('models') if os.path.isdir(os.path.join('models', folder))]
+        self.model_list['values'] = models
+        self.model_list.current(0)
+        self.model_list.bind("<<ComboboxSelected>>", self.on_model_selected)
 
     def on_device_selected(self, event):
-        # Update selected device index and restart the stream with the new device
         self.selected_device_index = self.device_list.current()
         self.text_output.insert(tk.END, f"Device changed to: {self.device_list.get()}\n")
         self.text_output.see(tk.END)
         self.restart_audio_stream()
+
+    def on_model_selected(self, event):
+        self.selected_model = self.model_list.get()
+        self.text_output.insert(tk.END, f"Model changed to: {self.selected_model}\n")
+        self.text_output.see(tk.END)
 
     def start_audio_stream(self):
         try:
@@ -137,9 +150,11 @@ class SpeechRecognizerApp:
                     self.text_output.insert(tk.END, f"Error reading audio stream: {e}\n")
                     self.text_output.see(tk.END)
 
+
     def start_recognition(self):
         self.running = True
-        self.device_list.config(state=tk.DISABLED)  # Disable device list
+        self.device_list.config(state=tk.DISABLED)
+        self.model_list.config(state=tk.DISABLED)
         self.start_button.config(state=tk.DISABLED)
         self.stop_button.config(state=tk.NORMAL)
         self.text_output.delete(1.0, tk.END)
@@ -149,11 +164,9 @@ class SpeechRecognizerApp:
 
     def recognize_speech(self):
         try:
-            # Set the model path
-            model_path = "vosk-model-en-us-0.42-gigaspeech"
-            self.model = vosk.Model(model_path)
+            model_path = self.selected_model  # Usar el modelo seleccionado
+            self.model = vosk.Model(f"models/{model_path}")
 
-            # Create a recognizer
             self.recognizer = vosk.KaldiRecognizer(self.model, 16000)
 
             self.text_output.insert(tk.END, "Listening for speech. Say 'Terminate' to stop.\n")
@@ -164,7 +177,7 @@ class SpeechRecognizerApp:
                     result = json.loads(self.recognizer.Result())
                     recognized_text = result['text']
                     self.text_output.insert(tk.END, recognized_text + "\n")
-                    self.text_output.see(tk.END)  # Scroll to the end of the text box
+                    self.text_output.see(tk.END)
 
                     if "terminate" in recognized_text.lower():
                         self.text_output.insert(tk.END, "Termination keyword detected. Stopping...\n")
@@ -175,9 +188,11 @@ class SpeechRecognizerApp:
             self.text_output.insert(tk.END, f"Error during recognition: {e}\n")
             self.text_output.see(tk.END)
 
+
     def stop_recognition(self):
         self.running = False
-        self.device_list.config(state="readonly")  # Enable device list
+        self.device_list.config(state="readonly")  # Enable device list}
+        self.model_list.config(state="readonly")
         self.start_button.config(state=tk.NORMAL)
         self.stop_button.config(state=tk.DISABLED)
 
