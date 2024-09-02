@@ -7,6 +7,9 @@ import threading
 import numpy as np
 import os
 
+CHUNK_SIZE = 2048
+SAMPLE_RATE = 64000
+
 class SpeechRecognizerApp:
     def __init__(self, root):
         self.root = root
@@ -117,7 +120,7 @@ class SpeechRecognizerApp:
                                       rate=rate,
                                       input=True,
                                       input_device_index=self.selected_device_index,
-                                      frames_per_buffer=1024,
+                                      frames_per_buffer=CHUNK_SIZE,
                                       )
 
             # Start a thread to monitor the audio intensity
@@ -143,7 +146,7 @@ class SpeechRecognizerApp:
         while True:
             if self.stream is not None:
                 try:
-                    data = self.stream.read(1024, exception_on_overflow=False)
+                    data = self.stream.read(CHUNK_SIZE, exception_on_overflow=False)
                     volume_level = np.frombuffer(data, dtype=np.int16).astype(np.float32).max()
                     self.progress['value'] = min(volume_level / 32767 * 100, 100)
                 except Exception as e:
@@ -167,29 +170,44 @@ class SpeechRecognizerApp:
             model_path = self.selected_model  # Usar el modelo seleccionado
             self.model = vosk.Model(f"models/{model_path}")
 
-            self.recognizer = vosk.KaldiRecognizer(self.model, 16000)
+            self.recognizer = vosk.KaldiRecognizer(self.model, SAMPLE_RATE)
 
-            self.text_output.insert(tk.END, "Listening for speech. Say 'Terminate' to stop.\n")
+            self.text_output.insert(tk.END, "...")
 
             while self.running:
-                data = self.stream.read(1024, exception_on_overflow=False)
+                data = self.stream.read(CHUNK_SIZE, exception_on_overflow=False)
+                if len(data) == 0:
+                    print("No data")
+                    break
+
                 if self.recognizer.AcceptWaveform(data):
                     result = json.loads(self.recognizer.Result())
                     recognized_text = result['text']
-                    self.text_output.insert(tk.END, recognized_text + "\n")
-                    self.text_output.see(tk.END)
-
-                    if "terminate" in recognized_text.lower():
-                        self.text_output.insert(tk.END, "Termination keyword detected. Stopping...\n")
-                        self.stop_recognition()
-                        break
+                    if recognized_text:  # Asegurarse de que no esté vacío
+                        # Reemplazar la última línea con el texto finalizado
+                        self.text_output.delete("end-1l", "end-1c")
+                        self.text_output.insert(tk.END, recognized_text + "\n")
+                        print("Completed: ", recognized_text)
+                        self.text_output.see(tk.END)
+                else:
+                    result = json.loads(self.recognizer.PartialResult())
+                    recognized_text = result['partial']
+                    if recognized_text:  # Asegurarse de que no esté vacío
+                        # Obtener la última línea
+                        last_line = self.text_output.get("end-1l", "end-1c")
+                        if last_line.endswith("..."):
+                            # Si la última línea termina en "...", reemplazarla
+                            self.text_output.delete("end-1l", "end-1c")
+                        self.text_output.insert(tk.END, recognized_text + "...")
+                        self.text_output.see(tk.END)
 
         except Exception as e:
             self.text_output.insert(tk.END, f"Error during recognition: {e}\n")
             self.text_output.see(tk.END)
 
 
-    def stop_recognition(self):
+
+    def stop_recognition(self):  
         self.running = False
         self.device_list.config(state="readonly")  # Enable device list}
         self.model_list.config(state="readonly")
@@ -207,6 +225,8 @@ class SpeechRecognizerApp:
 
 if __name__ == "__main__":
     root = tk.Tk()
+    root.geometry("800x300") # Set the window size
+    root.attributes("-topmost", True)
     app = SpeechRecognizerApp(root)
     root.protocol("WM_DELETE_WINDOW", app.on_close)
     root.mainloop()
